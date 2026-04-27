@@ -15,6 +15,7 @@ namespace Application.Services
 
         private const string CacheKey = "countries";
         private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(30);
+        private static readonly SemaphoreSlim _cacheLock = new SemaphoreSlim(1, 1);
 
         public CountryService(
             ICountryRepository repository,
@@ -38,42 +39,58 @@ namespace Application.Services
                 return cached.Select(MapToDto);
             }
 
-            _logger.LogDebug("Cache miss for {CacheKey}", CacheKey);
-
-            var dbCountries = await _repository.GetAllAsync(cancellationToken);
-
-            if (dbCountries.Count != 0)
+            await _cacheLock.WaitAsync(cancellationToken);
+            try
             {
-                var list = dbCountries.ToList();
+                // Double-check after acquiring the lock
+                if (_cache.TryGetValue(CacheKey, out cached) && cached != null)
+                {
+                    _logger.LogInformation(
+                        "Countries fetched from Cache (after lock). Count: {Count}.", cached.Count);
+                    return cached.Select(MapToDto);
+                }
 
-                _cache.Set(CacheKey, list, CacheDuration);
+                _logger.LogDebug("Cache miss for {CacheKey}", CacheKey);
 
-                _logger.LogInformation(
-                    "Countries fetched from Database. Count: {Count}.", list.Count);
+                var dbCountries = await _repository.GetAllAsync(cancellationToken);
 
-                return list.Select(MapToDto);
-            }
+                if (dbCountries.Count != 0)
+                {
+                    var list = dbCountries.ToList();
 
-            _logger.LogWarning(
-                "No countries found in Database. Falling back to ExternalApi");
+                    _cache.Set(CacheKey, list, CacheDuration);
 
-            var apiCountries = (await _client.GetAllCountriesAsync(cancellationToken)).ToList();
+                    _logger.LogInformation(
+                        "Countries fetched from Database. Count: {Count}.", list.Count);
 
-            if (apiCountries.Count != 0)
-            {
-                await _repository.SaveAllAsync(apiCountries, cancellationToken);
-                _cache.Set(CacheKey, apiCountries, CacheDuration);
+                    return list.Select(MapToDto);
+                }
 
-                _logger.LogInformation(
-                    "Countries fetched from ExternalApi. Count: {Count}.", apiCountries.Count);
-            }
-            else
-            {
                 _logger.LogWarning(
-                    "No countries returned from ExternalApi");
-            }
+                    "No countries found in Database. Falling back to ExternalApi");
 
-            return apiCountries.Select(MapToDto);
+                var apiCountries = (await _client.GetAllCountriesAsync(cancellationToken)).ToList();
+
+                if (apiCountries.Count != 0)
+                {
+                    await _repository.SaveAllAsync(apiCountries, cancellationToken);
+                    _cache.Set(CacheKey, apiCountries, CacheDuration);
+
+                    _logger.LogInformation(
+                        "Countries fetched from ExternalApi. Count: {Count}.", apiCountries.Count);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "No countries returned from ExternalApi");
+                }
+
+                return apiCountries.Select(MapToDto);
+            }
+            finally
+            {
+                _cacheLock.Release();
+            }
         }
 
         private static CountryDto MapToDto(Country country)
