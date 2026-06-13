@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace Api.Controllers
 {
     /// <summary>
-    /// Provides API endpoints for performing mathematical operations
+    /// Provides API endpoints for performing mathematical operations.
     /// </summary>
     /// <param name="service">The service used to perform mathematical calculations.</param>
     [ApiController]
